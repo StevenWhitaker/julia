@@ -1375,3 +1375,23 @@ let src = code_typed1() do
     @test count(isnew, src.code) == 1
     @test count(isinvoke(:noinline_finalizer), src.code) == 1
 end
+
+# optimize `push!(::Vector{Any}, x...)`
+let src = code_typed1(push!, (Vector{Any}, Any))
+    @test count(iscall((src, push!)), src.code) == 0
+    @test count(src.code) do @nospecialize x
+        isa(x, Core.GotoNode) || isa(x, Core.GotoIfNot)
+    end == 0 # the loop should be optimized away for a single item
+end
+let src = code_typed1(push!, (Vector{Any}, Any, Any))
+    @test count(iscall((src, push!)), src.code) == 0
+end
+let src = code_typed1(push!, (Vector{Any}, Any, Symbol))
+    @test count(iscall((src, push!)), src.code) == 0
+end
+let xs = Any[]
+    push!(xs, :x, "y", 'z')
+    @test xs[1] === :x
+    @test xs[2] == "y"
+    @test xs[3] === 'z'
+end
