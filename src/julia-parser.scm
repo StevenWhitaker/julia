@@ -640,12 +640,12 @@
 
 ;; parse left-to-right binary operator
 ;; produces structures like (+ (+ (+ 2 3) 4) 5)
-(define-macro (parse-LtoR s down ops)
-  `(let loop ((ex (,down ,s))
+(define-macro (parse-LtoR s down ops prev)
+  `(let loop ((ex (,down ,s ,prev))
               (t  (peek-token ,s)))
      (if (,ops t)
          (begin (take-token ,s)
-                (loop (list 'call t ex (,down ,s)) (peek-token ,s)))
+                (loop (list 'call t ex (,down ,s t)) (peek-token ,s)))
          ex)))
 
 ;; parse right-to-left binary operator
@@ -849,7 +849,7 @@
             (else ex)))))
 
 (define (parse-pipe< s) (parse-RtoL s parse-pipe> is-prec-pipe<? #f parse-pipe<))
-(define (parse-pipe> s) (parse-LtoR s parse-range is-prec-pipe>?))
+(define (parse-pipe> s) (parse-LtoR s (lambda (s prev) (parse-range s)) is-prec-pipe>? "stw-parse-pipe>-1"))
 
 ;; parse ranges and postfix ...
 ;; colon is strange; 3 arguments with 2 colons yields one call:
@@ -929,8 +929,8 @@
 
 (define (parse-expr s prev)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++) prev))
 (define (parse-term s prev)     (parse-with-chains s parse-rational      is-prec-times? '(*)    prev))
-(define (parse-rational s prev) (parse-LtoR        s (lambda (s) (parse-shift s prev))         is-prec-rational?))
-(define (parse-shift s prev)    (parse-LtoR        s (lambda (s) (parse-unary-subtype s prev)) is-prec-bitshift?))
+(define (parse-rational s prev) (parse-LtoR        s parse-shift         is-prec-rational? prev))
+(define (parse-shift s prev)    (parse-LtoR        s parse-unary-subtype is-prec-bitshift? prev))
 
 ;; parse `<: A where B` as `<: (A where B)` (issue #21545)
 (define (parse-unary-subtype s prev)
