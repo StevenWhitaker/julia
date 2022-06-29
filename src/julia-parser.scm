@@ -2474,7 +2474,9 @@
      (read (open-input-string (string #\" s #\"))))))
 
 ;; parse numbers, identifiers, parenthesized expressions, lists, vectors, etc.
-(define (parse-atom s prev (checked #t))
+;; prev needs to be an optional argument, otherwise commands don't parse correctly in Julia
+;; e.g., `echo $(variable_name[])` gives a "special characters must be quoted" error
+(define (parse-atom s (prev #f) (checked #t))
   (let ((t (require-token s)))
     (cond ;; char literal
           ((eq? t '|'|)
