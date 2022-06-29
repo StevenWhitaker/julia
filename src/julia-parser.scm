@@ -856,13 +856,13 @@
 ;; 1:2   => (call : 1 2)
 ;; 1:2:3 => (call : 1 2 3)
 (define (parse-range s)
-  (let loop ((ex     (parse-expr s))
+  (let loop ((ex     (parse-expr s "stw-parse-range-1"))
              (first? #t))
     (let* ((t   (peek-token s))
            (spc (ts:space? s)))
       (cond ((and first? (is-prec-colon? t) (not (eq? t ':)))
              (take-token s)
-             `(call ,t ,ex ,(parse-expr s)))
+             `(call ,t ,ex ,(parse-expr s "stw-parse-range-2")))
             ((and range-colon-enabled (eq? t ':))
              (take-token s)
              (if (and space-sensitive spc
@@ -877,7 +877,7 @@
                               ((newline? (peek-token s))
                                (error "line break in \":\" expression"))
                               (else
-                               (parse-expr s)))))
+                               (parse-expr s "stw-parse-range-3")))))
                    (if (and (not (ts:space? s))
                             (or (eq? argument '<) (eq? argument '>)))
                        (error (string "\":" argument "\" found instead of \""
@@ -893,7 +893,7 @@
 ;; parse left to right chains of a certain binary operator
 ;; returns a list of arguments
 (define (parse-chain s down op)
-  (let loop ((chain (list (down s))))
+  (let loop ((chain (list (down s op))))
     (let ((t (peek-token s)))
       (if (not (eq? t op))
           (reverse! chain)
@@ -905,12 +905,12 @@
                    (ts:put-back! s t spc)
                    (reverse! chain))
                   (else
-                   (loop (cons (down s) chain)))))))))
+                   (loop (cons (down s "stw-parse-chain-2") chain)))))))))
 
 ;; parse left to right, combining chains of a certain operator into 1 call
 ;; e.g. a+b+c => (call + a b c)
-(define (parse-with-chains s down ops chain-ops)
-  (let loop ((ex (down s)))
+(define (parse-with-chains s down ops chain-ops prev)
+  (let loop ((ex (down s prev)))
     (let ((t (peek-token s)))
       (if (not (ops t))
           ex
@@ -925,15 +925,15 @@
                    (loop (list* 'call t ex
                                 (parse-chain s down t))))
                   (else
-                   (loop (list 'call t ex (down s))))))))))
+                   (loop (list 'call t ex (down s t))))))))))
 
-(define (parse-expr s)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++)))
-(define (parse-term s)     (parse-with-chains s parse-rational      is-prec-times? '(*)))
-(define (parse-rational s) (parse-LtoR        s parse-shift         is-prec-rational?))
-(define (parse-shift s)    (parse-LtoR        s parse-unary-subtype is-prec-bitshift?))
+(define (parse-expr s prev)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++) prev))
+(define (parse-term s prev)     (parse-with-chains s parse-rational      is-prec-times? '(*)    prev))
+(define (parse-rational s prev) (parse-LtoR        s (lambda (s) (parse-shift s prev))         is-prec-rational?))
+(define (parse-shift s prev)    (parse-LtoR        s (lambda (s) (parse-unary-subtype s prev)) is-prec-bitshift?))
 
 ;; parse `<: A where B` as `<: (A where B)` (issue #21545)
-(define (parse-unary-subtype s)
+(define (parse-unary-subtype s prev)
   (let* ((op  (require-token s))
          (spc (ts:space? s)))
     (if (or (eq? op '|<:|) (eq? op '|>:|))
@@ -944,13 +944,13 @@
                        ;; parse <:{T}(x::T) or <:(x::T) like other unary operators
                        ((or (eqv? next #\{) (eqv? next #\( ))
                         (ts:put-back! s op spc)
-                        (parse-where s parse-juxtapose))
+                        (parse-where s (lambda (s) (parse-juxtapose s "stw-parse-unary-subtype-1"))))
                        (else
-                        (let ((arg (parse-where s parse-juxtapose)))
+                        (let ((arg (parse-where s (lambda (s) (parse-juxtapose s "stw-parse-unary-subtype-2")))))
                           (if (and (pair? arg) (eq? (car arg) 'tuple))
                               (cons op (cdr arg))
                               (list op arg)))))))
-        (parse-where s parse-juxtapose))))
+        (parse-where s (lambda (s) (parse-juxtapose s prev))))))
 
 (define (parse-where-chain s first)
   (with-bindings ((where-enabled #f))
@@ -1003,8 +1003,8 @@
                      (symbol? t)))
            (error (string "invalid numeric constant \"" expr t "\"")))))
 
-(define (parse-juxtapose s)
-  (let ((first (parse-unary s)))
+(define (parse-juxtapose s prev)
+  (let ((first (parse-unary s prev)))
     (let loop ((ex   first)
                (args (list first)))
       (let ((next (peek-token s)))
@@ -1012,7 +1012,7 @@
             (begin
               #;(if (and (number? ex) (= ex 0))
                     (error "juxtaposition with literal \"0\""))
-              (let ((next (if (radical-op? next) (parse-unary s) (parse-factor s))))
+              (let ((next (if (radical-op? next) (parse-unary s "stw-parse-juxtapose-2") (parse-factor s "stw-parse-juxtapose-1"))))
                 (loop `(call * ,ex ,next)
                       (cons next args))))
             (if (length= args 1)
@@ -1035,7 +1035,7 @@
   ;; TODO: ? should probably not be listed here except for the syntax hack in osutils.jl
   (Set (diff operators (append '(: |'| |.'| ?) syntactic-unary-operators syntactic-operators))))
 
-(define (parse-unary s)
+(define (parse-unary s prev)
   (let* ((op  (require-token s))
          (spc (ts:space? s)))
     (if (initial-operator? op)
@@ -1051,11 +1051,11 @@
                           ;; `[`, `{` (issue #18851) and `^` have higher precedence than
                           ;; unary negation; -2^x parsed as (- (^ 2 x)).
                           (begin (ts:put-back! s (maybe-negate op num) spc)
-                                 (list 'call op (parse-factor s)))
+                                 (list 'call op (parse-factor s "stw-parse-unary-1")))
                           num))
                     (parse-unary-call s op #t spc)))
               (parse-unary-call s op (unary-op? op) spc)))
-        (parse-factor s))))
+        (parse-factor s prev))))
 
 (define (fix-syntactic-unary e)
   (let ((ce (car e)))
@@ -1073,7 +1073,7 @@
           ((or (eqv? next #\{)  ;; this case is +{T}(x::T) = ...
                (and (not un) (eqv? next #\( )))
            (ts:put-back! s op spc)
-           (parse-factor s))
+           (parse-factor s "stw-parse-unary-call-1"))
           ((eqv? next #\( )
            (take-token s)
            (let* ((opspc  (ts:space? s))
@@ -1090,7 +1090,7 @@
           ((not un)
            (error (string "\"" op "\" is not a unary operator")))
           (else
-           (let ((arg  (parse-unary s)))
+           (let ((arg  (parse-unary s "stw-parse-unary-call-2")))
              (fix-syntactic-unary (list op arg)))))))
 
 (define block-form? (Set '(block quote if for while let function macro abstract primitive struct
@@ -1099,9 +1099,9 @@
 ;; handle ^ and .^
 ;; -2^3 is parsed as -(2^3), so call parse-decl for the first argument,
 ;; and parse-unary from then on (to handle 2^-3)
-(define (parse-factor s)
+(define (parse-factor s prev)
   (let ((nxt (peek-token s)))
-    (parse-factor-with-initial-ex s (parse-unary-prefix s) nxt)))
+    (parse-factor-with-initial-ex s (parse-unary-prefix s prev) nxt)))
 
 (define (parse-factor-with-initial-ex s ex0 (tok #f))
   (let* ((ex (parse-decl-with-initial-ex s (parse-call-with-initial-ex s ex0 tok)))
@@ -1111,7 +1111,7 @@
                (list 'call t ex (parse-factor-after s)))
         ex)))
 
-(define (parse-factor-after s) (parse-RtoL s parse-juxtapose is-prec-power? #f parse-factor-after))
+(define (parse-factor-after s) (parse-RtoL s (lambda (s) (parse-juxtapose s "stw-parse-factor-after-1")) is-prec-power? #f parse-factor-after))
 
 (define (parse-decl s)
   (parse-decl-with-initial-ex s (parse-call s)))
@@ -1134,14 +1134,14 @@
 ;; also handles looking for syntactic reserved words
 (define (parse-call s)
   (let ((nxt (peek-token s)))
-    (parse-call-with-initial-ex s (parse-unary-prefix s) nxt)))
+    (parse-call-with-initial-ex s (parse-unary-prefix s "stw-parse-call-1") nxt)))
 
 (define (parse-call-with-initial-ex s ex tok)
   (if (or (initial-reserved-word? tok) (memq tok '(mutable primitive abstract)))
       (parse-resword s ex)
       (parse-call-chain s ex #f)))
 
-(define (parse-unary-prefix s)
+(define (parse-unary-prefix s prev)
   (let ((op (peek-token s)))
     (if (syntactic-unary-op? op)
         (begin (take-token s)
@@ -1150,11 +1150,11 @@
                              (or (closing-token? next) (newline? next))))
                       op)
                      ((memq op '(& |::|))  (list op (parse-where s parse-call)))
-                     (else                 (list op (parse-unary-prefix s)))))
-        (parse-atom s))))
+                     (else                 (list op (parse-unary-prefix s op)))))
+        (parse-atom s prev))))
 
 (define (parse-def s is-func anon)
-  (let* ((ex  (parse-unary-prefix s))
+  (let* ((ex  (parse-unary-prefix s "stw-parse-def-1"))
          (sig (if (or (and is-func (reserved-word? ex)) (initial-reserved-word? ex))
                   (error (string "invalid name \"" ex "\""))
                   (parse-call-chain s ex #f)))
@@ -1252,13 +1252,13 @@
                               (error "newline not allowed after \":\" used for quoting"))
                              ((ts:space? s) ;; uses side effect of previous peek-token
                               (error "whitespace not allowed after \":\" used for quoting"))
-                             (else `(|.| ,ex (quote ,(parse-atom s #f)))))))
+                             (else `(|.| ,ex (quote ,(parse-atom s "stw-parse-call-chain-1" #f)))))))
                     ((eq? (peek-token s) '$)
                      (take-token s)
-                     (let ((dollarex (parse-atom s)))
+                     (let ((dollarex (parse-atom s "stw-parse-call-chain-2")))
                        `(|.| ,ex (inert ($ ,dollarex)))))
                     (else
-                     (let ((name (parse-atom s #f)))
+                     (let ((name (parse-atom s "stw-parse-call-chain-3" #f)))
                        (cond ((and (pair? name) (eq? (car name) 'macrocall))
                               `(macrocall (|.| ,ex (quote ,(cadr name))) ; move macrocall outside by rewriting A.@B as @A.B
                                           ,@(cddr name)))
@@ -1606,7 +1606,7 @@
               (error (string "unexpected \"" t "\" after " word)))))
 
        ((module baremodule)
-        (let* ((name (parse-unary-prefix s))
+        (let* ((name (parse-unary-prefix s "stw-parse-resword-1"))
                (loc  (line-number-node s))
                (body (parse-block s (lambda (s) (parse-docstring s parse-eq)))))
           (if (reserved-word? name)
@@ -1616,7 +1616,7 @@
                 `(block ,loc ,@(cdr body)))))
        ((export)
         (let ((es (map macrocall-to-atsym
-                       (parse-comma-separated s parse-unary-prefix))))
+                       (parse-comma-separated s (lambda (s) (parse-unary-prefix s "stw-parse-resword-2"))))))
           (if (not (every symbol-or-interpolate? es))
               (error "invalid \"export\" statement"))
           `(export ,@es)))
@@ -1675,14 +1675,14 @@
   (with-space-sensitive
    (if (eq? (peek-token s) '|.|)
        (begin (take-token s) '__dot__)
-       (parse-atom s #f))))
+       (parse-atom s "stw-parse-macro-name-1" #f))))
 
 (define (parse-atsym s)
   (let ((t (peek-token s)))
     (if (eqv? t #\@)
         (begin (take-token s)
                (macroify-name (parse-macro-name s)))
-        (parse-unary-prefix s))))
+        (parse-unary-prefix s "stw-parse-atsym-1"))))
 
 (define (parse-import-dots s)
   (let loop ((l '())
@@ -2474,7 +2474,7 @@
      (read (open-input-string (string #\" s #\"))))))
 
 ;; parse numbers, identifiers, parenthesized expressions, lists, vectors, etc.
-(define (parse-atom s (checked #t))
+(define (parse-atom s prev (checked #t))
   (let ((t (require-token s)))
     (cond ;; char literal
           ((eq? t '|'|)
@@ -2517,7 +2517,7 @@
                        (else (list 'quote
                            ;; being inside quote makes `end` non-special again. issue #27690
                            (with-bindings ((end-symbol #f))
-                                          (parse-atom s #f))))))))
+                                          (parse-atom s "stw-parse-atom-1" #f))))))))
 
           ;; misplaced =
           ((eq? t '=) (error "unexpected \"=\""))
@@ -2527,7 +2527,10 @@
            (if checked
                (begin (check-identifier t)
                       (if (closing-token? t)
-                          (error (string "unexpected \"" (take-token s) "\"")))))
+                          (let ((msg (string "unexpected \"" (take-token s) "\"; expected value or expression after \"" prev "\"")))
+                            (if (eq? prev '++)
+                                (error (string msg " - perhaps you meant \"+= 1\"?"))
+                                (error msg))))))
            (take-token s)
            (cond ((and (eq? t 'var)
                        (if (or (ts:pbtok s) (ts:last-tok s))
@@ -2604,7 +2607,11 @@
 
           ((or (string? t) (number? t) (large-number? t)) (take-token s))
 
-          ((closing-token? t) (error (string "unexpected \"" (take-token s) "\"")))
+          ((closing-token? t)
+           (let ((msg (string "unexpected \"" (take-token s) "\"; expected value or expression after \"" prev "\"")))
+             (if (eq? prev '++)
+                 (error (string msg " - perhaps you meant \"+= 1\"?"))
+                 (error msg))))
 
           (else (error (string "invalid syntax: \"" (take-token s) "\""))))))
 
