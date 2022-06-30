@@ -657,7 +657,7 @@
          (begin (take-token ,s)
                 (if ,syntactic
                     (list       t ex (,self ,s t))
-                    (list 'call t ex (,self ,s "stw-parse-RtoL-3"))))
+                    (list 'call t ex (,self ,s t))))
          ex)))
 
 (define (line-number-node s)
@@ -774,14 +774,14 @@
                           (not (space-before-next-token? s)))
                      (begin (ts:put-back! s t (ts:space? s))
                             ex)
-                     (list 'call t ex (parse-assignment s down "stw-parse-assignment-1"))))
+                     (list 'call t ex (parse-assignment s down t))))
                 ((eq? t '=)
                  ;; insert line/file for short-form function defs, otherwise leave alone
                  (let ((lno (input-port-line (ts:port s))))
                    (short-form-function-loc
                     (list t ex (parse-assignment s down t)) lno)))
                 (else
-                 (list t ex (parse-assignment s down "stw-parse-assignment-3"))))))))
+                 (list t ex (parse-assignment s down t))))))))
 
 ; parse-comma is needed for commas outside parens, for example a = b,c
 (define (parse-comma s prev)
@@ -799,7 +799,7 @@
         (begin (take-token s)
                (if (eq? (peek-token s) '=) ;; allow x, = ...
                    (loop ex #f (peek-token s))
-                   (loop (cons (parse-pair s "stw-parse-comma-2") ex) #f (peek-token s)))))))
+                   (loop (cons (parse-pair s t) ex) #f (peek-token s)))))))
 
 (define (parse-pair s prev) (parse-RtoL s parse-cond is-prec-pair? #f parse-pair prev))
 
@@ -812,7 +812,7 @@
                   (let ((t (with-whitespace-newline (without-range-colon (require-token s)))))
                     (if (not (ts:space? s))
                         (error "space required after \"?\" operator")))
-                  (let ((then (without-range-colon (parse-eq* s "stw-parse-cond-1"))))
+                  (let ((then (without-range-colon (parse-eq* s '?))))
                     (if (not (eq? (peek-token s) ':))
                         (error "colon expected in \"?\" expression"))
                     (if (not (ts:space? s))
@@ -821,7 +821,7 @@
                     (let ((t (with-whitespace-newline (require-token s))))
                       (if (not (ts:space? s))
                           (error "space required after colon in \"?\" expression")))
-                    (list 'if ex then (parse-eq* s "stw-parse-cond-2")))))
+                    (list 'if ex then (parse-eq* s ':)))))
           (else ex))))
 
 (define (parse-arrow s prev) (parse-RtoL s parse-or         is-prec-arrow? (eq? t '-->) parse-arrow prev))
@@ -862,7 +862,7 @@
            (spc (ts:space? s)))
       (cond ((and first? (is-prec-colon? t) (not (eq? t ':)))
              (take-token s)
-             `(call ,t ,ex ,(parse-expr s "stw-parse-range-2")))
+             `(call ,t ,ex ,(parse-expr s t)))
             ((and range-colon-enabled (eq? t ':))
              (take-token s)
              (if (and space-sensitive spc
@@ -877,6 +877,7 @@
                               ((newline? (peek-token s))
                                (error "line break in \":\" expression"))
                               (else
+                               ;; not sure how to get here except with error-free syntax
                                (parse-expr s "stw-parse-range-3")))))
                    (if (and (not (ts:space? s))
                             (or (eq? argument '<) (eq? argument '>)))
@@ -905,7 +906,7 @@
                    (ts:put-back! s t spc)
                    (reverse! chain))
                   (else
-                   (loop (cons (down s "stw-parse-chain-2") chain)))))))))
+                   (loop (cons (down s op) chain)))))))))
 
 ;; parse left to right, combining chains of a certain operator into 1 call
 ;; e.g. a+b+c => (call + a b c)
@@ -958,7 +959,7 @@
               (t 'where))
      (if (eq? t 'where)
          (begin (take-token s)
-                (let ((var (parse-comparison s "stw-parse-where-chain-1")))
+                (let ((var (parse-comparison s 'where)))
                   (loop (if (and (pair? var) (eq? (car var) 'braces))
                             (list* 'where ex (cdr var))  ;; form `x where {T,S}`
                             (list 'where ex var))
@@ -1078,7 +1079,7 @@
            (take-token s)
            (let* ((opspc  (ts:space? s))
                   (lno    (input-port-line (ts:port s)))
-                  (parens (parse-paren- s #t)))
+                  (parens (parse-paren- s #t next)))
              (if (cdr parens) ;; found an argument list
                  (if opspc
                      (disallowed-space-error lno op #\( )
@@ -1121,12 +1122,12 @@
     (let ((t (peek-token s)))
       (case t
         ((|::|) (take-token s)
-         (loop (list t ex (parse-where s parse-call "stw-parse-decl-with-initial-ex-1"))))
+         (loop (list t ex (parse-where s parse-call t))))
         ((->)   (take-token s)
          ;; -> is unusual: it binds tightly on the left and
          ;; loosely on the right.
          (let ((lno (line-number-node s)))
-           `(-> ,ex ,(add-line-number (parse-eq* s "stw-parse-decl-with-initial-ex-2") lno))))
+           `(-> ,ex ,(add-line-number (parse-eq* s t) lno))))
         (else
          ex)))))
 
@@ -1134,7 +1135,7 @@
 ;; also handles looking for syntactic reserved words
 (define (parse-call s prev)
   (let ((nxt (peek-token s)))
-    (parse-call-with-initial-ex s (parse-unary-prefix s "stw-parse-call-1") nxt)))
+    (parse-call-with-initial-ex s (parse-unary-prefix s prev) nxt)))
 
 (define (parse-call-with-initial-ex s ex tok)
   (if (or (initial-reserved-word? tok) (memq tok '(mutable primitive abstract)))
@@ -1195,7 +1196,7 @@
             ((#\( )
              (disallow-space s ex t)
              (take-token s)
-             (let ((c (let ((al (parse-call-arglist s #\) )))
+             (let ((c (let ((al (parse-call-arglist s #\) "stw-parse-call-chain-4")))
                         (receive
                          (params args) (separate (lambda (x)
                                                    (and (pair? x)
@@ -1244,7 +1245,7 @@
                        (if (ts:space? s)
                            (disallow-space s `(|.| ,ex (quote ||)) #\())
                        (take-token s)
-                       `(|.| ,ex (tuple ,@(parse-call-arglist s #\) )))))
+                       `(|.| ,ex (tuple ,@(parse-call-arglist s #\) "stw-parse-call-chain-5")))))
                     ((eqv? (peek-token s) ':)
                      (begin
                        (take-token s)
@@ -1282,7 +1283,7 @@
             ((#\{ )
              (disallow-space s ex t)
              (take-token s)
-             (let ((args (parse-call-arglist s #\} )))
+             (let ((args (parse-call-arglist s #\} t)))
                (if macrocall?
                    `(call ,ex (braces ,@args))
                    (loop (list* 'curly ex args)))))
@@ -1795,9 +1796,9 @@
   (map =-to-kw lst))
 
 ;; like parse-arglist, but with `for` parsed as a generator
-(define (parse-call-arglist s closer)
+(define (parse-call-arglist s closer prev)
   (with-bindings ((for-generator #t))
-   (parse-arglist s closer "stw-parse-call-arglist")))
+   (parse-arglist s closer prev)))
 
 ;; handle function call argument list, or any comma-delimited list.
 ;; . an extra comma at the end is allowed
@@ -2142,10 +2143,10 @@
   `(if (invalid-identifier? ,ex)
        (error (string "invalid identifier name \"" ,ex "\""))))
 
-(define (parse-paren s (checked #t)) (car (parse-paren- s checked)))
+(define (parse-paren s prev (checked #t)) (car (parse-paren- s checked prev)))
 
 ;; return (expr . arglist) where arglist is #t iff this isn't just a parenthesized expr
-(define (parse-paren- s checked)
+(define (parse-paren- s checked prev)
   (with-bindings
    ((range-colon-enabled #t)
     (space-sensitive #f)
@@ -2178,7 +2179,7 @@
        ;; here we parse the first subexpression separately, so
        ;; we can look for a comma to see if it's a tuple.
        ;; this lets us distinguish (x) from (x,)
-       (let* ((ex (parse-eq* s "stw-parse-paren--1"))
+       (let* ((ex (parse-eq* s prev))
               (t  (require-token s)))
          (cond ((eqv? t #\) )
                 (take-token s)
@@ -2535,7 +2536,11 @@
                               ('++
                                (error (string msg " - perhaps you meant \"+= 1\"?")))
                               ((#\,)
-                               (error (string unexpected "expected value, expression, or closing token (e.g., \")\") after \"" prev "\"")))
+                               (error (string unexpected "expected value, expression, or (possibly) a closing token (e.g., \")\") after \"" prev "\"")))
+                              ((#\( #\[ #\{)
+                               (error (string unexpected "expected value, expression, or matching closing token after \"" prev "\"")))
+                              ((|::|)
+                               (error (string unexpected "expected a type after \"" prev "\"")))
                               (else (error msg)))))))
            (take-token s)
            (cond ((and (eq? t 'var)
@@ -2559,7 +2564,7 @@
           ;; parens or tuple
           ((eqv? t #\( )
            (take-token s)
-           (parse-paren s checked))
+           (parse-paren s t checked))
 
           ;; cat expression
           ((eqv? t #\[ )
@@ -2620,7 +2625,11 @@
                ('++
                 (error (string msg " - perhaps you meant \"+= 1\"?")))
                ((#\,)
-                (error (string unexpected "expected value, expression, or matching closing token (e.g., \")\") after \"" prev "\"")))
+                (error (string unexpected "expected value, expression, or (possibly) a matching closing token (e.g., \")\") after \"" prev "\"")))
+               ((#\( #\[ #\{)
+                (error (string unexpected "expected value, expression, or matching closing token after \"" prev "\"")))
+               ((|::|)
+                (error (string unexpected "expected a type after \"" prev "\"")))
                (else (error msg)))))
 
           (else (error (string "invalid syntax: \"" (take-token s) "\""))))))
