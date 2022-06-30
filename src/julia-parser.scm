@@ -656,8 +656,8 @@
      (if (,ops t)
          (begin (take-token ,s)
                 (if ,syntactic
-                    (list       t ex (,self ,s t))
-                    (list 'call t ex (,self ,s t))))
+                    (list       t ex (,self ,s "stw-parse-RtoL-2"))
+                    (list 'call t ex (,self ,s "stw-parse-RtoL-3"))))
          ex)))
 
 (define (line-number-node s)
@@ -804,7 +804,7 @@
 (define (parse-pair s prev) (parse-RtoL s parse-cond is-prec-pair? #f parse-pair "stw-parse-pair-1"))
 
 (define (parse-cond s prev)
-  (let ((ex (parse-arrow s prev)))
+  (let ((ex (parse-arrow s "stw-parse-cond-1")))
     (cond ((eq? (peek-token s) '?)
            (begin (if (not (ts:space? s))
                       (error "space required before \"?\" operator"))
@@ -829,7 +829,7 @@
 (define (parse-and s prev)   (parse-RtoL s parse-comparison is-prec-lazy-and? #t parse-and "stw-parse-and-1"))
 
 (define (parse-comparison s prev)
-  (let loop ((ex (parse-pipe< s prev))
+  (let loop ((ex (parse-pipe< s "stw-parse-comparison-1"))
              (first #t))
     (let ((t (peek-token s)))
       (cond ((is-prec-comparison? t)
@@ -927,7 +927,7 @@
                   (else
                    (loop (list 'call t ex (down s t))))))))))
 
-(define (parse-expr s prev)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++) prev))
+(define (parse-expr s prev)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++) "stw-parse-expr-1"))
 (define (parse-term s prev)     (parse-with-chains s parse-rational      is-prec-times? '(*)    prev))
 (define (parse-rational s prev) (parse-LtoR        s parse-shift         is-prec-rational? prev))
 (define (parse-shift s prev)    (parse-LtoR        s parse-unary-subtype is-prec-bitshift? prev))
@@ -944,13 +944,13 @@
                        ;; parse <:{T}(x::T) or <:(x::T) like other unary operators
                        ((or (eqv? next #\{) (eqv? next #\( ))
                         (ts:put-back! s op spc)
-                        (parse-where s (lambda (s) (parse-juxtapose s "stw-parse-unary-subtype-1"))))
+                        (parse-where s parse-juxtapose "stw-parse-unary-subtype-1"))
                        (else
-                        (let ((arg (parse-where s (lambda (s) (parse-juxtapose s "stw-parse-unary-subtype-2")))))
+                        (let ((arg (parse-where s parse-juxtapose "stw-parse-unary-subtype-2")))
                           (if (and (pair? arg) (eq? (car arg) 'tuple))
                               (cons op (cdr arg))
                               (list op arg)))))))
-        (parse-where s (lambda (s) (parse-juxtapose s prev))))))
+        (parse-where s parse-juxtapose prev))))
 
 (define (parse-where-chain s first)
   (with-bindings ((where-enabled #f))
@@ -965,9 +965,9 @@
                         (peek-token s))))
          ex))))
 
-(define (parse-where s down)
+(define (parse-where s down prev)
   ;; `where` needs to be below unary for `+(x::T,y::T) where {T} = ...` to work
-  (let ((ex (down s)))
+  (let ((ex (down s prev)))
     (if (and where-enabled
              (eq? (peek-token s) 'where))
         (parse-where-chain s ex)
@@ -1012,7 +1012,7 @@
             (begin
               #;(if (and (number? ex) (= ex 0))
                     (error "juxtaposition with literal \"0\""))
-              (let ((next (if (radical-op? next) (parse-unary s "stw-parse-juxtapose-2") (parse-factor s "stw-parse-juxtapose-1"))))
+              (let ((next (if (radical-op? next) (parse-unary s "stw-parse-juxtapose-2") (parse-factor s "stw-parse-juxtapose-3"))))
                 (loop `(call * ,ex ,next)
                       (cons next args))))
             (if (length= args 1)
@@ -1121,7 +1121,7 @@
     (let ((t (peek-token s)))
       (case t
         ((|::|) (take-token s)
-         (loop (list t ex (parse-where s parse-call))))
+         (loop (list t ex (parse-where s parse-call "stw-parse-decl-with-initial-ex-1"))))
         ((->)   (take-token s)
          ;; -> is unusual: it binds tightly on the left and
          ;; loosely on the right.
@@ -1149,8 +1149,8 @@
                            (let ((next (peek-token s)))
                              (or (closing-token? next) (newline? next))))
                       op)
-                     ((memq op '(& |::|))  (list op (parse-where s parse-call)))
-                     (else                 (list op (parse-unary-prefix s op)))))
+                     ((memq op '(& |::|))  (list op (parse-where s parse-call "stw-parse-unary-prefix-2")))
+                     (else                 (list op (parse-unary-prefix s "stw-parse-unary-prefix-1")))))
         (parse-atom s prev))))
 
 (define (parse-def s is-func anon)
