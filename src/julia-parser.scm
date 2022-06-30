@@ -650,14 +650,14 @@
 
 ;; parse right-to-left binary operator
 ;; produces structures like (= a (= b (= c d)))
-(define-macro (parse-RtoL s down ops syntactic self)
-  `(let* ((ex (,down ,s))
+(define-macro (parse-RtoL s down ops syntactic self prev)
+  `(let* ((ex (,down ,s ,prev))
           (t  (peek-token ,s)))
      (if (,ops t)
          (begin (take-token ,s)
                 (if ,syntactic
-                    (list       t ex (,self ,s))
-                    (list 'call t ex (,self ,s))))
+                    (list       t ex (,self ,s t))
+                    (list 'call t ex (,self ,s t))))
          ex)))
 
 (define (line-number-node s)
@@ -743,8 +743,8 @@
                  (if (or (eqv? nxt #\,) (eqv? nxt #\) ) (eqv? nxt #\}) (eqv? nxt #\]))
                      t
                      (begin (ts:put-back! s t spc)
-                            (parse-assignment s parse-pair)))))
-        (parse-assignment s parse-pair))))
+                            (parse-assignment s (lambda (s) (parse-pair s "stw-parse-eq*-1")))))))
+        (parse-assignment s (lambda (s) (parse-pair s "stw-parse-eq*-2"))))))
 
 (define (eventually-call? ex)
   (and (pair? ex)
@@ -785,7 +785,7 @@
 
 ; parse-comma is needed for commas outside parens, for example a = b,c
 (define (parse-comma s)
-  (let loop ((ex     (list (parse-pair s)))
+  (let loop ((ex     (list (parse-pair s "stw-parse-comma-1")))
              (first? #t)
              (t      (peek-token s)))
     (if (not (eqv? t #\,))
@@ -799,12 +799,12 @@
         (begin (take-token s)
                (if (eq? (peek-token s) '=) ;; allow x, = ...
                    (loop ex #f (peek-token s))
-                   (loop (cons (parse-pair s) ex) #f (peek-token s)))))))
+                   (loop (cons (parse-pair s "stw-parse-comma-2") ex) #f (peek-token s)))))))
 
-(define (parse-pair s) (parse-RtoL s parse-cond is-prec-pair? #f parse-pair))
+(define (parse-pair s prev) (parse-RtoL s parse-cond is-prec-pair? #f parse-pair "stw-parse-pair-1"))
 
-(define (parse-cond s)
-  (let ((ex (parse-arrow s)))
+(define (parse-cond s prev)
+  (let ((ex (parse-arrow s prev)))
     (cond ((eq? (peek-token s) '?)
            (begin (if (not (ts:space? s))
                       (error "space required before \"?\" operator"))
@@ -824,19 +824,19 @@
                     (list 'if ex then (parse-eq* s)))))
           (else ex))))
 
-(define (parse-arrow s) (parse-RtoL s parse-or         is-prec-arrow? (eq? t '-->) parse-arrow))
-(define (parse-or s)    (parse-RtoL s parse-and        is-prec-lazy-or? #t parse-or))
-(define (parse-and s)   (parse-RtoL s parse-comparison is-prec-lazy-and? #t parse-and))
+(define (parse-arrow s prev) (parse-RtoL s parse-or         is-prec-arrow? (eq? t '-->) parse-arrow "stw-parse-arrow-1"))
+(define (parse-or s prev)    (parse-RtoL s parse-and        is-prec-lazy-or? #t parse-or "stw-parse-or-1"))
+(define (parse-and s prev)   (parse-RtoL s parse-comparison is-prec-lazy-and? #t parse-and "stw-parse-and-1"))
 
-(define (parse-comparison s)
-  (let loop ((ex (parse-pipe< s))
+(define (parse-comparison s prev)
+  (let loop ((ex (parse-pipe< s prev))
              (first #t))
     (let ((t (peek-token s)))
       (cond ((is-prec-comparison? t)
              (begin (take-token s)
                     (if first
-                        (loop (list 'comparison ex t (parse-pipe< s)) #f)
-                        (loop (append ex (list t (parse-pipe< s))) #f))))
+                        (loop (list 'comparison ex t (parse-pipe< s t)) #f)
+                        (loop (append ex (list t (parse-pipe< s t))) #f))))
             (first ex)
             ((length= ex 4)
              ;; only a single comparison; special chained syntax not required
@@ -848,14 +848,14 @@
                    `(call ,op ,arg1 ,arg2))))
             (else ex)))))
 
-(define (parse-pipe< s) (parse-RtoL s parse-pipe> is-prec-pipe<? #f parse-pipe<))
-(define (parse-pipe> s) (parse-LtoR s (lambda (s prev) (parse-range s)) is-prec-pipe>? "stw-parse-pipe>-1"))
+(define (parse-pipe< s prev) (parse-RtoL s parse-pipe> is-prec-pipe<? #f parse-pipe< "stw-parse-pipe<-1"))
+(define (parse-pipe> s prev) (parse-LtoR s parse-range is-prec-pipe>? "stw-parse-pipe>-1"))
 
 ;; parse ranges and postfix ...
 ;; colon is strange; 3 arguments with 2 colons yields one call:
 ;; 1:2   => (call : 1 2)
 ;; 1:2:3 => (call : 1 2 3)
-(define (parse-range s)
+(define (parse-range s prev)
   (let loop ((ex     (parse-expr s "stw-parse-range-1"))
              (first? #t))
     (let* ((t   (peek-token s))
@@ -958,7 +958,7 @@
               (t 'where))
      (if (eq? t 'where)
          (begin (take-token s)
-                (let ((var (parse-comparison s)))
+                (let ((var (parse-comparison s "stw-parse-where-chain-1")))
                   (loop (if (and (pair? var) (eq? (car var) 'braces))
                             (list* 'where ex (cdr var))  ;; form `x where {T,S}`
                             (list 'where ex var))
@@ -1108,10 +1108,10 @@
          (t  (peek-token s)))
     (if (is-prec-power? t)
         (begin (take-token s)
-               (list 'call t ex (parse-factor-after s)))
+               (list 'call t ex (parse-factor-after s "stw-parse-factor-with-initial-ex-1")))
         ex)))
 
-(define (parse-factor-after s) (parse-RtoL s (lambda (s) (parse-juxtapose s "stw-parse-factor-after-1")) is-prec-power? #f parse-factor-after))
+(define (parse-factor-after s prev) (parse-RtoL s parse-juxtapose is-prec-power? #f parse-factor-after "stw-parse-factor-after-2"))
 
 (define (parse-decl s)
   (parse-decl-with-initial-ex s (parse-call s)))
@@ -1325,7 +1325,7 @@
                      " expected \"end\", got \"" t "\""))))
 
 (define (parse-subtype-spec s)
-  (parse-comparison s))
+  (parse-comparison s "stw-parse-subtype-spec-1"))
 
 (define (valid-func-sig? paren sig)
   (and (pair? sig)
@@ -1397,7 +1397,7 @@
             (if (eq? word 'quote)
                 (list 'quote blk)
                 blk))))
-       ((while)  (begin0 (list 'while (parse-cond s) (append (parse-block s) (list (line-number-node s))))
+       ((while)  (begin0 (list 'while (parse-cond s "stw-parse-resword-1") (append (parse-block s) (list (line-number-node s))))
                          (expect-end s word)))
        ((for)
         (let* ((ranges (parse-comma-separated-iters s))
@@ -1429,7 +1429,7 @@
             (error (string "missing condition in \"if\" at " current-filename
                            ":" (- (input-port-line (ts:port s)) 1))))
         (let* ((lno (line-number-node s))  ;; line number for elseif condition
-               (test (parse-cond s))
+               (test (parse-cond s "stw-parse-resword-2"))
                (test (if (eq? word 'elseif)
                          `(block ,lno ,test)
                          test))
@@ -1519,7 +1519,7 @@
             (parse-call-chain s word #f)
             (begin (take-token s)
                    (let* ((spec (with-space-sensitive (parse-subtype-spec s)))
-                          (nb   (with-space-sensitive (parse-cond s))))
+                          (nb   (with-space-sensitive (parse-cond s "stw-parse-resword-3"))))
                      (begin0 (list 'primitive spec nb)
                              (expect-end (take-lineendings s) "primitive type"))))))
 
@@ -1632,7 +1632,7 @@
    (with-normal-context
     (let ((doargs (if (memv (peek-token s) '(#\newline #\;))
                       '()
-                      (parse-comma-separated s parse-range))))
+                      (parse-comma-separated s (lambda (s) (parse-range s "stw-parse-do-1"))))))
       `(-> (tuple ,@doargs)
            ,(begin0 (parse-block s)
                     (expect-end s 'do)))))))
@@ -1755,18 +1755,18 @@
           (begin (take-token s)
                  (peek-token s))
           t)))
-  (let* ((lhs (let ((lhs- (with-space-sensitive (parse-pipe< s))))
+  (let* ((lhs (let ((lhs- (with-space-sensitive (parse-pipe< s "stw-parse-iteration-spec-1"))))
                 (if (eq? lhs- 'outer)
                     (let ((nxt (peek-token- s)))
                       (if (memq nxt '(= in ∈))
                           lhs-
-                          `(outer ,(parse-pipe< s))))
+                          `(outer ,(parse-pipe< s "stw-parse-iteration-spec-2"))))
                     lhs-)))
          (t (peek-token- s)))
     (if (memq t '(= in ∈))
         (begin
           (take-token s)
-          `(= ,lhs ,(parse-pipe< s)))
+          `(= ,lhs ,(parse-pipe< s "stw-parse-iteration-spec-3")))
         (error "invalid iteration specification"))))
 
 (define (parse-comma-separated-iters s)
@@ -1883,7 +1883,7 @@
   (let ((iters (parse-comma-separated-iters s)))
     (let ((iters (if (eq? (peek-token s) 'if)
                      (begin (take-token s)
-                            (list `(filter ,(parse-cond s) ,@iters)))
+                            (list `(filter ,(parse-cond s "stw-parse-generator-1") ,@iters)))
                      iters)))
       (if (eq? (peek-token s) 'for)
           (begin (expect-space-before s 'for)
