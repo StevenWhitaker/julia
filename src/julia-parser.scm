@@ -1797,13 +1797,13 @@
 ;; like parse-arglist, but with `for` parsed as a generator
 (define (parse-call-arglist s closer)
   (with-bindings ((for-generator #t))
-   (parse-arglist s closer)))
+   (parse-arglist s closer "stw-parse-call-arglist")))
 
 ;; handle function call argument list, or any comma-delimited list.
 ;; . an extra comma at the end is allowed
 ;; . expressions after a ; are enclosed in (parameters ...)
 ;; . an expression followed by ... becomes (... x)
-(define (parse-arglist s closer (add-linenums #f))
+(define (parse-arglist s closer prev (add-linenums #f))
 (with-bindings ((range-colon-enabled #t)
                 (space-sensitive #f)
                 (where-enabled #t)
@@ -1829,7 +1829,7 @@
                                      '())
                                ,@params)
                              lst)))
-              (let* ((nxt (parse-eq* s "stw-parse-arglist-1"))
+              (let* ((nxt (parse-eq* s prev))
                      (c (require-token s)))
                 (cond ((eqv? c #\,)
                        (take-token s)
@@ -1865,7 +1865,7 @@
                            (cons 'vect (reverse (cons nxt lst)))))
                    ((eqv? (require-token s) #\;)
                     ;; [a,; ...
-                    (let ((params (parse-arglist s closer)))
+                    (let ((params (parse-arglist s closer "stw-parse-vect-2")))
                       `(vect ,@params ,@(reverse lst) ,nxt)))
                    (else
                     (loop (cons nxt lst) (parse-eq* s "stw-parse-vect-1")))))
@@ -2172,7 +2172,7 @@
        (take-token s)  ;; take #\)
        '(|::| . #f))
       ((eqv? nxt #\;)
-       (let ((ex (arglist-to-tuple s #t #f (parse-arglist s #\) ))))
+       (let ((ex (arglist-to-tuple s #t #f (parse-arglist s #\) "stw-parse-paren--2"))))
          (cons ex (eq? (car ex) 'tuple))))
       (else
        ;; here we parse the first subexpression separately, so
@@ -2189,7 +2189,7 @@
                ((eqv? t #\,)
                 ;; tuple (x,) (x,y) etc.
                 (take-token s)
-                (cons (arglist-to-tuple s #f #t (parse-arglist s #\) ) ex)
+                (cons (arglist-to-tuple s #f #t (parse-arglist s #\) t) ex)
                       #t))
                ((eqv? t #\;)
                 (cons (arglist-to-tuple
@@ -2197,7 +2197,7 @@
                        #f
                        ;; consider `(x...; ` the start of an arglist, since it's not useful as a block
                        (vararg? ex)
-                       (parse-arglist s #\) #t)
+                       (parse-arglist s #\) "stw-parse-paren--4" #t)
                        ex)
                       (vararg? ex)))
                ((eq? t 'for)
@@ -2529,10 +2529,14 @@
            (if checked
                (begin (check-identifier t)
                       (if (closing-token? t)
-                          (let ((msg (string "unexpected \"" (take-token s) "\"; expected value or expression after \"" prev "\"")))
-                            (if (eq? prev '++)
-                                (error (string msg " - perhaps you meant \"+= 1\"?"))
-                                (error msg))))))
+                          (let* ((unexpected (string "unexpected \"" (take-token s) "\"; "))
+                                 (msg (string unexpected "expected value or expression after \"" prev "\"")))
+                            (case prev
+                              ('++
+                               (error (string msg " - perhaps you meant \"+= 1\"?")))
+                              ((#\,)
+                               (error (string unexpected "expected value, expression, or closing token (e.g., \")\") after \"" prev "\"")))
+                              (else (error msg)))))))
            (take-token s)
            (cond ((and (eq? t 'var)
                        (if (or (ts:pbtok s) (ts:last-tok s))
@@ -2610,10 +2614,14 @@
           ((or (string? t) (number? t) (large-number? t)) (take-token s))
 
           ((closing-token? t)
-           (let ((msg (string "unexpected \"" (take-token s) "\"; expected value or expression after \"" prev "\"")))
-             (if (eq? prev '++)
-                 (error (string msg " - perhaps you meant \"+= 1\"?"))
-                 (error msg))))
+           (let* ((unexpected (string "unexpected \"" (take-token s) "\"; "))
+                  (msg (string unexpected "expected value or expression after \"" prev "\"")))
+             (case prev
+               ('++
+                (error (string msg " - perhaps you meant \"+= 1\"?")))
+               ((#\,)
+                (error (string unexpected "expected value, expression, or matching closing token (e.g., \")\") after \"" prev "\"")))
+               (else (error msg)))))
 
           (else (error (string "invalid syntax: \"" (take-token s) "\""))))))
 
