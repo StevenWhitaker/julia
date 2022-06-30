@@ -656,7 +656,7 @@
      (if (,ops t)
          (begin (take-token ,s)
                 (if ,syntactic
-                    (list       t ex (,self ,s "stw-parse-RtoL-2"))
+                    (list       t ex (,self ,s t))
                     (list 'call t ex (,self ,s "stw-parse-RtoL-3"))))
          ex)))
 
@@ -724,7 +724,7 @@
           (error (string "extra token \"" t "\" after end of expression"))))
     ex))
 
-(define (parse-eq s) (parse-assignment s parse-comma))
+(define (parse-eq s) (parse-assignment s parse-comma "stw-parse-eq-1"))
 
 ;; symbol tokens that do not simply parse to themselves when appearing alone as
 ;; an element of an argument list
@@ -732,7 +732,7 @@
   (Set (append operators reserved-words '(.... mutable primitive abstract))))
 
 ; parse-eq* is used where commas are special, for example in an argument list
-(define (parse-eq* s)
+(define (parse-eq* s prev)
   (let* ((t   (peek-token s))
          (spc (ts:space? s)))
     ;; optimization: skip checking the whole precedence stack if we have a simple
@@ -743,8 +743,8 @@
                  (if (or (eqv? nxt #\,) (eqv? nxt #\) ) (eqv? nxt #\}) (eqv? nxt #\]))
                      t
                      (begin (ts:put-back! s t spc)
-                            (parse-assignment s (lambda (s) (parse-pair s "stw-parse-eq*-1")))))))
-        (parse-assignment s (lambda (s) (parse-pair s "stw-parse-eq*-2"))))))
+                            (parse-assignment s parse-pair "stw-parse-eq*-1")))))
+        (parse-assignment s parse-pair prev))))
 
 (define (eventually-call? ex)
   (and (pair? ex)
@@ -762,8 +762,8 @@
       `(= ,(cadr ex) ,(add-line-number (caddr ex) `(line ,lno ,current-filename)))
       ex))
 
-(define (parse-assignment s down)
-  (let* ((ex (down s))
+(define (parse-assignment s down prev)
+  (let* ((ex (down s prev))
          (t  (peek-token s)))
     (if (not (is-prec-assignment? t))
         ex
@@ -774,18 +774,18 @@
                           (not (space-before-next-token? s)))
                      (begin (ts:put-back! s t (ts:space? s))
                             ex)
-                     (list 'call t ex (parse-assignment s down))))
+                     (list 'call t ex (parse-assignment s down "stw-parse-assignment-1"))))
                 ((eq? t '=)
                  ;; insert line/file for short-form function defs, otherwise leave alone
                  (let ((lno (input-port-line (ts:port s))))
                    (short-form-function-loc
-                    (list t ex (parse-assignment s down)) lno)))
+                    (list t ex (parse-assignment s down t)) lno)))
                 (else
-                 (list t ex (parse-assignment s down))))))))
+                 (list t ex (parse-assignment s down "stw-parse-assignment-3"))))))))
 
 ; parse-comma is needed for commas outside parens, for example a = b,c
-(define (parse-comma s)
-  (let loop ((ex     (list (parse-pair s "stw-parse-comma-1")))
+(define (parse-comma s prev)
+  (let loop ((ex     (list (parse-pair s prev)))
              (first? #t)
              (t      (peek-token s)))
     (if (not (eqv? t #\,))
@@ -801,10 +801,10 @@
                    (loop ex #f (peek-token s))
                    (loop (cons (parse-pair s "stw-parse-comma-2") ex) #f (peek-token s)))))))
 
-(define (parse-pair s prev) (parse-RtoL s parse-cond is-prec-pair? #f parse-pair "stw-parse-pair-1"))
+(define (parse-pair s prev) (parse-RtoL s parse-cond is-prec-pair? #f parse-pair prev))
 
 (define (parse-cond s prev)
-  (let ((ex (parse-arrow s "stw-parse-cond-1")))
+  (let ((ex (parse-arrow s prev)))
     (cond ((eq? (peek-token s) '?)
            (begin (if (not (ts:space? s))
                       (error "space required before \"?\" operator"))
@@ -812,7 +812,7 @@
                   (let ((t (with-whitespace-newline (without-range-colon (require-token s)))))
                     (if (not (ts:space? s))
                         (error "space required after \"?\" operator")))
-                  (let ((then (without-range-colon (parse-eq* s))))
+                  (let ((then (without-range-colon (parse-eq* s "stw-parse-cond-1"))))
                     (if (not (eq? (peek-token s) ':))
                         (error "colon expected in \"?\" expression"))
                     (if (not (ts:space? s))
@@ -821,15 +821,15 @@
                     (let ((t (with-whitespace-newline (require-token s))))
                       (if (not (ts:space? s))
                           (error "space required after colon in \"?\" expression")))
-                    (list 'if ex then (parse-eq* s)))))
+                    (list 'if ex then (parse-eq* s "stw-parse-cond-2")))))
           (else ex))))
 
-(define (parse-arrow s prev) (parse-RtoL s parse-or         is-prec-arrow? (eq? t '-->) parse-arrow "stw-parse-arrow-1"))
-(define (parse-or s prev)    (parse-RtoL s parse-and        is-prec-lazy-or? #t parse-or "stw-parse-or-1"))
-(define (parse-and s prev)   (parse-RtoL s parse-comparison is-prec-lazy-and? #t parse-and "stw-parse-and-1"))
+(define (parse-arrow s prev) (parse-RtoL s parse-or         is-prec-arrow? (eq? t '-->) parse-arrow prev))
+(define (parse-or s prev)    (parse-RtoL s parse-and        is-prec-lazy-or? #t parse-or prev))
+(define (parse-and s prev)   (parse-RtoL s parse-comparison is-prec-lazy-and? #t parse-and prev))
 
 (define (parse-comparison s prev)
-  (let loop ((ex (parse-pipe< s "stw-parse-comparison-1"))
+  (let loop ((ex (parse-pipe< s prev))
              (first #t))
     (let ((t (peek-token s)))
       (cond ((is-prec-comparison? t)
@@ -848,15 +848,15 @@
                    `(call ,op ,arg1 ,arg2))))
             (else ex)))))
 
-(define (parse-pipe< s prev) (parse-RtoL s parse-pipe> is-prec-pipe<? #f parse-pipe< "stw-parse-pipe<-1"))
-(define (parse-pipe> s prev) (parse-LtoR s parse-range is-prec-pipe>? "stw-parse-pipe>-1"))
+(define (parse-pipe< s prev) (parse-RtoL s parse-pipe> is-prec-pipe<? #f parse-pipe< prev))
+(define (parse-pipe> s prev) (parse-LtoR s parse-range is-prec-pipe>? prev))
 
 ;; parse ranges and postfix ...
 ;; colon is strange; 3 arguments with 2 colons yields one call:
 ;; 1:2   => (call : 1 2)
 ;; 1:2:3 => (call : 1 2 3)
 (define (parse-range s prev)
-  (let loop ((ex     (parse-expr s "stw-parse-range-1"))
+  (let loop ((ex     (parse-expr s prev))
              (first? #t))
     (let* ((t   (peek-token s))
            (spc (ts:space? s)))
@@ -927,7 +927,7 @@
                   (else
                    (loop (list 'call t ex (down s t))))))))))
 
-(define (parse-expr s prev)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++) "stw-parse-expr-1"))
+(define (parse-expr s prev)     (parse-with-chains s parse-term          is-prec-plus?  '(+ ++) prev))
 (define (parse-term s prev)     (parse-with-chains s parse-rational      is-prec-times? '(*)    prev))
 (define (parse-rational s prev) (parse-LtoR        s parse-shift         is-prec-rational? prev))
 (define (parse-shift s prev)    (parse-LtoR        s parse-unary-subtype is-prec-bitshift? prev))
@@ -1108,13 +1108,13 @@
          (t  (peek-token s)))
     (if (is-prec-power? t)
         (begin (take-token s)
-               (list 'call t ex (parse-factor-after s "stw-parse-factor-with-initial-ex-1")))
+               (list 'call t ex (parse-factor-after s t)))
         ex)))
 
-(define (parse-factor-after s prev) (parse-RtoL s parse-juxtapose is-prec-power? #f parse-factor-after "stw-parse-factor-after-2"))
+(define (parse-factor-after s prev) (parse-RtoL s parse-juxtapose is-prec-power? #f parse-factor-after prev))
 
 (define (parse-decl s)
-  (parse-decl-with-initial-ex s (parse-call s)))
+  (parse-decl-with-initial-ex s (parse-call s "stw-parse-decl-1")))
 
 (define (parse-decl-with-initial-ex s ex)
   (let loop ((ex ex))
@@ -1126,13 +1126,13 @@
          ;; -> is unusual: it binds tightly on the left and
          ;; loosely on the right.
          (let ((lno (line-number-node s)))
-           `(-> ,ex ,(add-line-number (parse-eq* s) lno))))
+           `(-> ,ex ,(add-line-number (parse-eq* s "stw-parse-decl-with-initial-ex-2") lno))))
         (else
          ex)))))
 
 ;; parse function call, indexing, dot, and transpose expressions
 ;; also handles looking for syntactic reserved words
-(define (parse-call s)
+(define (parse-call s prev)
   (let ((nxt (peek-token s)))
     (parse-call-with-initial-ex s (parse-unary-prefix s "stw-parse-call-1") nxt)))
 
@@ -1161,7 +1161,7 @@
          (decl-sig
           (if (and is-func (eq? (peek-token s) '|::|))
               (begin (take-token s)
-                     `(|::| ,sig ,(parse-call s)))
+                     `(|::| ,sig ,(parse-call s "stw-parse-def-2")))
               sig)))
     (if (eq? (peek-token s) 'where)
         (parse-where-chain s decl-sig)
@@ -1552,7 +1552,7 @@
                           finalb
                           elseb)
                     (let* ((loc (line-number-node s))
-                           (var (if nl #f (parse-eq* s)))
+                           (var (if nl #f (parse-eq* s "stw-parse-resword-4")))
                            (var? (and (not nl) (or (symbol? var)
                                                    (and (length= var 2) (eq? (car var) '$))
                                                    (error (string "invalid syntax \"catch " (deparse var) "\"")))))
@@ -1743,7 +1743,7 @@
         (else   (reverse! (cons r exprs)))))))
 
 (define (parse-comma-separated-assignments s)
-  (parse-comma-separated s parse-eq*))
+  (parse-comma-separated s (lambda (s) (parse-eq* s "stw-parse-comma-separated-assignments-1"))))
 
 ;; as above, but allows both "i=r" and "i in r"
 (define (parse-iteration-spec s)
@@ -1829,7 +1829,7 @@
                                      '())
                                ,@params)
                              lst)))
-              (let* ((nxt (parse-eq* s))
+              (let* ((nxt (parse-eq* s "stw-parse-arglist-1"))
                      (c (require-token s)))
                 (cond ((eqv? c #\,)
                        (take-token s)
@@ -1868,7 +1868,7 @@
                     (let ((params (parse-arglist s closer)))
                       `(vect ,@params ,@(reverse lst) ,nxt)))
                    (else
-                    (loop (cons nxt lst) (parse-eq* s)))))
+                    (loop (cons nxt lst) (parse-eq* s "stw-parse-vect-1")))))
             ((#\;)
              (if (eqv? (require-token s) closer)
                  (loop lst nxt)
@@ -2006,7 +2006,7 @@
                            (if (eqv? closer #\]) #\[ #\{) " " closer
                            "\"; got \""
                            (deparse (caar a)) t "\"")))
-         (let ((u (parse-eq* s)))
+         (let ((u (parse-eq* s "stw-parse-array-1")))
            (set! a (cons (cons u (car a)) (cdr a)))
            (if (= (length (car a)) 2)
                ; at least 2 elements separated by space found [a b...], [a; b c...]
@@ -2049,7 +2049,7 @@
                                             (deparse `(ncat ,n)) " expression"))))))
              (loop))
             (else
-             (let* ((first (parse-eq* s))
+             (let* ((first (parse-eq* s "stw-parse-cat-1"))
                     (t (peek-token s)))
                (cond ((or (eqv? t #\,) (eqv? t closer))
                       (parse-vect s first closer))
@@ -2178,7 +2178,7 @@
        ;; here we parse the first subexpression separately, so
        ;; we can look for a comma to see if it's a tuple.
        ;; this lets us distinguish (x) from (x,)
-       (let* ((ex (parse-eq* s))
+       (let* ((ex (parse-eq* s "stw-parse-paren--1"))
               (t  (require-token s)))
          (cond ((eqv? t #\) )
                 (take-token s)
@@ -2376,7 +2376,7 @@
                  (error (string "interpolated variable $" t " ends with invalid character \"" c "\"; use \"$(" t ")\" instead.")))))
           ((eqv? c #\()
            (read-char p)
-           (let ((ex (parse-eq* s))
+           (let ((ex (parse-eq* s "stw-parse-interpolate-1"))
                  (t (require-token s)))
              (cond ((eqv? t #\) )
                     (take-token s)
